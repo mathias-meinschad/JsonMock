@@ -1,7 +1,12 @@
-﻿using System.Text.Json;
+﻿// Program.cs
+
+using System.Text.Json;
+using System.Text.RegularExpressions;
+using JsonMock.Helpers;
 using Microsoft.AspNetCore.Builder;
 using Microsoft.AspNetCore.Hosting;
 using Microsoft.AspNetCore.Http;
+using Microsoft.Extensions.Configuration;
 using Microsoft.Extensions.Hosting;
 using Serilog;
 
@@ -9,7 +14,7 @@ var appBase = AppContext.BaseDirectory;
 
 // ---- Serilog (file) ----
 Log.Logger = new LoggerConfiguration().MinimumLevel.Debug().Enrich.FromLogContext().WriteTo
-    .File(path: Path.Combine(appBase, "logs", "mock-.log"), rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14, shared: true).CreateLogger();
+    .File(Path.Combine(appBase, "logs", "mock-.log"), rollingInterval: RollingInterval.Day, retainedFileCountLimit: 14, shared: true).CreateLogger();
 
 try {
     var builder = WebApplication.CreateBuilder(args);
@@ -20,86 +25,68 @@ try {
     // Read SCA base path from config
     var scaBasePath = builder.Configuration["ScaConfig:BasePath"];
     var pdgBasePath = builder.Configuration["PdgConfig:BasePath"];
+    
+    // Bind resolver options from config
+    var pdgResolverOptions = new ResolverOptions();
+    builder.Configuration.GetSection("PdgConfig:Resolver").Bind(pdgResolverOptions);
+    // Build the resolver function
+    var pdgResolver = ResponseHelper.BuildResolverFromConfig(pdgResolverOptions);
+    
     var app = builder.Build();
+
+    // ---------------------------
+    // SCA endpoints (unchanged)
+    // ---------------------------
 
     #region SCA
 
-    app.MapPost("/scaJsonMock/startAuthentication", async (HttpRequest req) => await GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", $"{scaBasePath}\\startAuthentication"));
+    app.MapPost("/scaJsonMock/startAuthentication",
+        async (HttpRequest req) => await ResponseHelper.GetResponseByJsonPath(req, jsonPath: "metaData.businessMetaData.correlationId", basePath: Path.Combine(scaBasePath!, "startAuthentication")));
 
     app.MapPost("/scaJsonMock/getAuthenticationStatus", async (HttpRequest req) => {
         var rand = new Random();
         if (rand.Next(0, 10) < 5) {
-            // 50% chance 
-            return GetFileResponse($@"{scaBasePath}\getAuthenticationStatus\pending.json");
+            // 50% chance
+            return ResponseHelper.GetFileResponse(Path.Combine(scaBasePath!, "getAuthenticationStatus", "pending.json"));
         }
 
-        return await GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", $"{scaBasePath}\\getAuthenticationStatus");
+        return await ResponseHelper.GetResponseByJsonPath(req, jsonPath: "metaData.businessMetaData.correlationId", basePath: Path.Combine(scaBasePath!, "getAuthenticationStatus"));
     });
 
     app.MapPost("/scaJsonMock/notifyAuthenticationUpdate",
-        async (HttpRequest req) => await GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", $"{scaBasePath}\\notifyAuthenticationUpdate"));
+        async (HttpRequest req) => await ResponseHelper.GetResponseByJsonPath(req, jsonPath: "metaData.businessMetaData.correlationId", basePath: Path.Combine(scaBasePath!, "notifyAuthenticationUpdate")));
 
     #endregion
 
+
+    // ---------------------------
+    // PDG endpoints (using resolver)
+    // ---------------------------
 
     #region PDG
 
     app.MapPost("/pdgJsonMock/authorizeTokenProvisioning",
-        async (HttpRequest req) => await GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", $"{pdgBasePath}\\authorizeTokenProvisioning"));
+        (HttpRequest req) => ResponseHelper.GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", Path.Combine(pdgBasePath!, "authorizeTokenProvisioning"),
+            pdgResolver));
 
     app.MapPost("/pdgJsonMock/notifyTokenDigitization",
-        async (HttpRequest req) => await GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", $"{pdgBasePath}\\notifyTokenDigitization"));
+        (HttpRequest req) => ResponseHelper.GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", Path.Combine(pdgBasePath!, "notifyTokenDigitization"),
+            pdgResolver));
 
-    app.MapPost("/pdgJsonMock/notifyTokenEvent", async (HttpRequest req) => await GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", $"{pdgBasePath}\\notifyTokenEvent"));
+    app.MapPost("/pdgJsonMock/notifyTokenEvent",
+        (HttpRequest req) => ResponseHelper.GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", Path.Combine(pdgBasePath!, "notifyTokenEvent"), pdgResolver));
 
-    app.MapPost("/pdgJsonMock/activationCodeNotif", async (HttpRequest req) => await GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", $"{pdgBasePath}\\activationCodeNotif"));
+    app.MapPost("/pdgJsonMock/activationCodeNotif",
+        (HttpRequest req) => ResponseHelper.GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", Path.Combine(pdgBasePath!, "activationCodeNotif"), pdgResolver));
 
     #endregion
 
     Log.Information("Host starting up.");
-
     app.Run();
-
     Log.Information("Host terminated gracefully.");
 } catch (Exception ex) {
     Log.Fatal(ex, "Host terminated unexpectedly during startup.");
-    throw; // let SCM see the failure, but we still have the logs
+    throw;
 } finally {
     Log.CloseAndFlush();
-}
-
-async Task<IResult> GetResponseByJsonPath(HttpRequest req,
-                                          string path,
-                                          string basePath) {
-    // Read JSON body
-    var body = await JsonSerializer.DeserializeAsync<JsonElement>(req.Body);
-
-    // Example: pick response file based on "type" field
-    string? type = GetByPath(body, path);
-    string filePath = $"{basePath}\\{type}.json";
-
-    return GetFileResponse(!File.Exists(filePath) ? $"{basePath}\\default.json" : filePath);
-}
-
-IResult GetFileResponse(string filePath) {
-    if (!File.Exists(filePath))
-        return Results.NotFound(new {error = $"File {filePath} not found"});
-
-    var json = File.ReadAllText(filePath);
-    var element = JsonSerializer.Deserialize<JsonElement>(json);
-
-    return Results.Json(element);
-}
-
-string? GetByPath(JsonElement element, string path) {
-    var parts = path.Split('.');
-    JsonElement current = element;
-
-    foreach (var part in parts) {
-        if (current.ValueKind != JsonValueKind.Object || !current.TryGetProperty(part, out current)) {
-            return null; // not found
-        }
-    }
-
-    return current.ValueKind == JsonValueKind.String ? current.GetString() : current.ToString();
 }
