@@ -35,12 +35,37 @@ public static class ResponseHelper {
     }
 
     public static IResult GetFileResponse(string filePath) {
-        if (!File.Exists(filePath))
-            return Results.NotFound(new {error = $"File {filePath} not found"});
+        if (!File.Exists(filePath)) {
+            // 404 with file info
+            var notFound = new {
+                trxId = Guid.NewGuid().ToString(),
+                errorStatus = new {
+                    code = "404",
+                    text = $"Mock file not found: '{filePath}'.",
+                    category = "TECHNICAL"
+                }
+            };
+            return Results.Json(notFound, statusCode: StatusCodes.Status404NotFound);
+        }
 
-        var json = File.ReadAllText(filePath);
-        var element = JsonSerializer.Deserialize<JsonElement>(json);
-        return Results.Json(element);
+        try {
+            var json = File.ReadAllText(filePath);
+            // If the file's JSON is invalid, this will throw and be caught below
+            var element = JsonSerializer.Deserialize<JsonElement>(json);
+            return Results.Json(element);
+        }
+        catch (JsonException) {
+            // 500 with file info when the mock JSON is malformed
+            var badJson = new {
+                trxId = Guid.NewGuid().ToString(),
+                errorStatus = new {
+                    code = "500",
+                    text = $"Invalid JSON in mock file: '{filePath}'.",
+                    category = "TECHNICAL"
+                }
+            };
+            return Results.Json(badJson, statusCode: StatusCodes.Status500InternalServerError);
+        }
     }
 
     private static string? GetByPath(JsonElement element, string path) {
@@ -101,8 +126,8 @@ public static class ResponseHelper {
             return StartsWithResolver(rules, opts.Fallback, opts.IgnoreCase, opts.ElseUseRaw);
         }
     }
-
 }
+
 public class ResolverOptions {
     public string Mode { get; set; } = "startsWith"; // "startsWith" | "regex"
     public string Fallback { get; set; } = "default.json";
