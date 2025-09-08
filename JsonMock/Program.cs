@@ -177,7 +177,10 @@ try {
 
     #region SCA
 
-    app.MapPost("/scaJsonMock/startAuthentication", async (HttpRequest req) => {
+    // ---- SCA group ----
+    var sca = app.MapGroup("/scaJsonMock");
+
+    sca.MapPost("/startAuthentication", async (HttpRequest req) => {
         var response = await SearchForCards(req, "startAuthentication", scaBasePath!);
         // adjust the value of the field scaConsentData.resourceId to a new GUID
         // If the helper returned JSON, tweak scaConsentData.resourceId
@@ -197,7 +200,7 @@ try {
         return response;
     });
 
-    app.MapPost("/scaJsonMock/getAuthenticationStatus", async (HttpRequest req) => {
+    sca.MapPost("/getAuthenticationStatus", async (HttpRequest req) => {
         var rand = new Random();
         if (rand.Next(0, 10) < 5) {
             // 50% chance
@@ -207,24 +210,42 @@ try {
         return await SearchForCards(req, "getAuthenticationStatus", scaBasePath!);
     });
 
-    app.MapPost("/scaJsonMock/notifyAuthenticationUpdate", async (HttpRequest req) => await SearchForCards(req, "notifyAuthenticationUpdate", scaBasePath!));
+    // Generic fallback for any other SCA method (any verb)
+    // Uses the FINAL path segment as the method name
+    sca.Map("/{*tail}", async (HttpRequest req, string? tail) => {
+        var methodName = tail?.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+        if (string.IsNullOrWhiteSpace(methodName)) {
+            return Results.BadRequest(new {
+                trxId = Guid.NewGuid().ToString(),
+                errorStatus = new {code = "400", text = "Missing method name in path.", category = "TECHNICAL"}
+            });
+        }
+        return await SearchForCards(req, methodName, scaBasePath!);
+    });
 
     #endregion
 
 
     // ---------------------------
-// PDG endpoints (hierarchical lookup + fallback to old logic)
-// ---------------------------
+    // PDG endpoints (hierarchical lookup + fallback to old logic)
+    // ---------------------------
 
     #region PDG
 
-    app.MapPost("/pdgJsonMock/authorizeTokenProvisioning", async (HttpRequest req) => await SearchForCards(req, "authorizeTokenProvisioning", pdgBasePath!));
+    // ---- PDG group ----
+    var pdg = app.MapGroup("/pdgJsonMock");
 
-    app.MapPost("/pdgJsonMock/notifyTokenDigitization", async (HttpRequest req) => await SearchForCards(req, "notifyTokenDigitization", pdgBasePath!));
-
-    app.MapPost("/pdgJsonMock/notifyTokenEvent", async (HttpRequest req) => await SearchForCards(req, "notifyTokenEvent", pdgBasePath!));
-
-    app.MapPost("/pdgJsonMock/activationCodeNotif", async (HttpRequest req) => await SearchForCards(req, "activationCodeNotif", pdgBasePath!));
+    // Generic fallback for any other PDG method (any verb)
+    pdg.Map("/{*tail}", async (HttpRequest req, string? tail) => {
+        var methodName = tail?.Split('/', StringSplitOptions.RemoveEmptyEntries).LastOrDefault();
+        if (string.IsNullOrWhiteSpace(methodName)) {
+            return Results.BadRequest(new {
+                trxId = Guid.NewGuid().ToString(),
+                errorStatus = new {code = "400", text = "Missing method name in path.", category = "TECHNICAL"}
+            });
+        }
+        return await SearchForCards(req, methodName, pdgBasePath!);
+    });
 
     #endregion
 
