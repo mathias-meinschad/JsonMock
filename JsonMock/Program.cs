@@ -170,6 +170,49 @@ try {
         return await ResponseHelper.GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", methodDir, pdgResolver // keep your configured resolver in play
         );
     }
+    
+    // 1) {base}/{method}/{epcId}/{userId}.json
+    // 2) {base}/{method}/{userId}.json
+    // 3) {base}/{method}/{epcId}.json
+    // 4) Fallback: old correlationId/resolver/default
+    async Task<IResult> SearchForUser(HttpRequest req,
+                                      string methodName,
+                                      string basePath) {
+        var methodDir = Path.Combine(basePath, methodName);
+
+        // Read body but keep it available for the fallback call
+        req.EnableBuffering();
+        using var doc = await JsonDocument.ParseAsync(req.Body);
+        req.Body.Position = 0; // reset for fallback
+
+        var root = doc.RootElement;
+        var epcId = PathGet(root, "metaData.systemMetaData.epcIdentification");
+        var userId = PathGet(root, "metaData.trackingMetaData.userId");
+
+        // 1) {epcId}/{userId}.json
+        if (!string.IsNullOrWhiteSpace(epcId) && !string.IsNullOrWhiteSpace(userId)) {
+            var p1 = Path.Combine(methodDir, epcId, $"{userId}.json");
+            if (File.Exists(p1))
+                return ResponseHelper.GetFileResponse(p1);
+        }
+
+        // 2) {userId}.json
+        if (!string.IsNullOrWhiteSpace(userId)) {
+            var p2 = Path.Combine(methodDir, $"{userId}.json");
+            if (File.Exists(p2))
+                return ResponseHelper.GetFileResponse(p2);
+        }
+
+        // 3) {epcId}.json
+        if (!string.IsNullOrWhiteSpace(epcId)) {
+            var p3 = Path.Combine(methodDir, $"{epcId}.json");
+            if (File.Exists(p3))
+                return ResponseHelper.GetFileResponse(p3);
+        }
+
+        // 4) Old logic (correlationId + resolver + default)
+        return await ResponseHelper.GetResponseByJsonPath(req, "metaData.businessMetaData.correlationId", methodDir, pdgResolver); // keep your configured resolver in play
+    }
 
     // ---------------------------
     // SCA endpoints (unchanged)
@@ -181,7 +224,7 @@ try {
     var sca = app.MapGroup("/scaJsonMock");
 
     sca.MapPost("/startAuthentication", async (HttpRequest req) => {
-        var response = await SearchForCards(req, "startAuthentication", scaBasePath!);
+        var response = await SearchForUser(req, "startAuthentication", scaBasePath!);
         // adjust the value of the field scaConsentData.resourceId to a new GUID
         // If the helper returned JSON, tweak scaConsentData.resourceId
         if (response is JsonHttpResult<JsonElement> jsonResult) {
@@ -207,7 +250,7 @@ try {
             return ResponseHelper.GetFileResponse(Path.Combine(scaBasePath!, "getAuthenticationStatus", "pending.json"));
         }
 
-        return await SearchForCards(req, "getAuthenticationStatus", scaBasePath!);
+        return await SearchForUser(req, "getAuthenticationStatus", scaBasePath!);
     });
 
     // Generic fallback for any other SCA method (any verb)
@@ -220,7 +263,7 @@ try {
                 errorStatus = new {code = "400", text = "Missing method name in path.", category = "TECHNICAL"}
             });
         }
-        return await SearchForCards(req, methodName, scaBasePath!);
+        return await SearchForUser(req, methodName, scaBasePath!);
     });
 
     #endregion
